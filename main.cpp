@@ -853,6 +853,8 @@ static std::map<std::string, std::vector<std::string>> stockDataMapL1; // 用于
 static std::mutex mutexL2;
 static std::map<std::string, std::vector<std::string>> stockDataMapL2; // 用于L2数据
 static std::mutex mutexSH;
+static std::mutex mutexSZZC;
+static std::mutex mutexSZZW;
 static std::map<std::string, vector<shared_ptr<StockDataSH>>> stockDataMapSH; // 用于SH数据
 
 static std::map<std::string, vector<shared_ptr<Stock_Transaction_SZ>>> stockDataMapSZZC; // 用于SZZC
@@ -965,31 +967,45 @@ void StoreDataSH(const std::string &code, shared_ptr<StockDataSH> ptr)
 
 void StoreDataSZZC(const std::string &code, shared_ptr<Stock_Transaction_SZ> ptr)
 {
-	std::lock_guard<std::mutex> lock(mutexSH);
-	stockDataMapSZZC[code].push_back(ptr);
-	auto &vec = stockDataMapSZZC[code];
-	vec.push_back(ptr);
-	if (vec.size() >= WRITE_THRESHOLD) {
-		// 构造文件路径：一个股票code对应一个文件
-		std::string filepath = "./hangqing_data/" + code + ".csv";
-		// 拷贝当前数据
-		std::vector<shared_ptr<Stock_Transaction_SZ>> dataToWrite = vec;
-		// 清空原数据
-		vec.clear();
-		// 写入文件
+	bool needWrite = false;
+	std::vector<std::shared_ptr<Stock_Transaction_SZ>> dataToWrite;
+	std::string filepath;
+	// 1) 缩小加锁的范围
+	{
+		std::lock_guard<std::mutex> lock(mutexSZZC);
+
+		// 操作共享数据 stockDataMapSZZC
+		stockDataMapSZZC[code].push_back(ptr);
+		auto &vec = stockDataMapSZZC[code];
+		vec.push_back(ptr);
+
+		if (vec.size() >= WRITE_THRESHOLD) {
+			// 需要写文件时，把要写的内容拷贝出来，并清空原始容器
+			filepath = "./hangqing_data/" + code + "SZZC.csv";
+			dataToWrite = vec;   // 拷贝要写入的对象
+			vec.clear();
+
+			// 标记一下，外部要执行写文件
+			needWrite = true;
+		}
+
+	} // 2) 离开这个花括号，lock_guard 作用域结束，锁被自动解锁
+
+	  // 3) 在锁外执行文件写入
+	if (needWrite) {
 		WriteToFileSZZC(filepath, dataToWrite, code);
 	}
 }
 
 void StoreDataSZZW(const std::string &code, shared_ptr<Stock_StepOrder_SZ> ptr)
 {
-	std::lock_guard<std::mutex> lock(mutexSH);
+	std::lock_guard<std::mutex> lock(mutexSZZW);
 	stockDataMapSZZW[code].push_back(ptr);
 	auto &vec = stockDataMapSZZW[code];
 	vec.push_back(ptr);
 	if (vec.size() >= WRITE_THRESHOLD) {
 		// 构造文件路径：一个股票code对应一个文件
-		std::string filepath = "./hangqing_data/" + code + ".csv";
+		std::string filepath = "./hangqing_data/" + code + "SZZW.csv";
 		// 拷贝当前数据
 		std::vector<shared_ptr<Stock_StepOrder_SZ>> dataToWrite = vec;
 		// 清空原数据
@@ -1079,18 +1095,25 @@ void _cdecl MyDoMsg(T_SIPTAGMSG* ptag, void* pParam)
         {
             PSZ_StockStepTrade data = &pZSdata->data.trans;
 			string szcode(code);
-			szcode += "_ZC.csv";
-			szcode = str + szcode;
-			WriteSZStepTradeToFile(*data, szcode);
-            //printf("SZ ZC 2009,type=1,time=[%lld],date=[%d]\n", data->i64TransactTime, data->nActionDay);
+			Stock_Transaction_SZ localData = *data;
+			auto ptr = make_shared<Stock_Transaction_SZ>(localData);
+			// 异步执行
+			auto futureObj = std::async(std::launch::async, [szcode, ptr]() {
+				// instead of a pointer, if necessary.
+				StoreDataSZZC(szcode, ptr);
+			});
         }
         else if (pZSdata->type == 2)//SZ ZW 2003
         {
             PSZ_StockStepOrder data = &pZSdata->data.order;
 			string szcode(code);
-			szcode += "_ZW.csv";
-			szcode = str + szcode;
-			WriteSZStepOrderToFile(*data, szcode);
+			Stock_StepOrder_SZ localData = *data;
+			auto ptr = make_shared<Stock_StepOrder_SZ>(localData);
+			// 异步执行
+			auto futureObj = std::async(std::launch::async, [szcode, ptr]() {
+				// instead of a pointer, if necessary.
+				StoreDataSZZW(szcode, ptr);
+			});
             //printf("SZ ZW 2009,type=2,time=[%lld],date=[%d]\n", data->i64TransactTime, data->nActionDay);
         }
         break;
@@ -1126,7 +1149,7 @@ void _cdecl MyDoMsg(T_SIPTAGMSG* ptag, void* pParam)
 		// 异步执行
 		auto futureObj = std::async(std::launch::async, [shcode, ptr]() {
 			// instead of a pointer, if necessary.
-			StoreData(shcode, ptr);
+			StoreDataSH(shcode, ptr);
 		});
 		//shcode += ".csv";
 		//shcode = str + shcode;
