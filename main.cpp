@@ -31,7 +31,12 @@
 #include <mutex>
 #include <thread>
 #include <future>
+#include <sstream>
+#include<unordered_map>
 using namespace std;
+
+unordered_map<string, double> stockUpLimitMap;
+
 
 GTPTradeApi * g_TradeApi;
 GTPMarketDataApi *g_marketDataAPI;
@@ -862,6 +867,10 @@ static std::map<std::string, vector<shared_ptr<Stock_Transaction_SZ>>> stockData
 static std::map<std::string, vector<shared_ptr<Stock_StepOrder_SZ>>> stockDataMapSZZW; // 用于SZZW
 const int WRITE_THRESHOLD = 100;
 
+// 添加全局变量
+std::unordered_map<std::string, double> lastClosePriceMap;
+std::unordered_map<std::string, double> upLimitPriceMap;  //股票涨停信息字典
+
 // 全局map，存储code对应的file对应的锁
 std::map<std::string, std::mutex> mutex_map;
 
@@ -1015,6 +1024,36 @@ void StoreDataSZZW(const std::string &code, shared_ptr<Stock_StepOrder_SZ> ptr)
 	}
 }
 
+
+void ReadStockPool(const string& filename) {
+	ifstream file(filename);
+	if (!file.is_open()) {
+		cerr << "Error opening file: " << filename << endl;
+		return;
+	}
+
+	string line;
+	getline(file, line); // 读取并跳过表头
+
+	while (getline(file, line)) {
+		stringstream ss(line);
+		string ts_code, name, close, zhangting;
+		getline(ss, ts_code, ','); // 读取 ts_code
+		getline(ss, name, ','); // 读取 name (不使用)
+		getline(ss, close, ','); // 读取 close (不使用)
+		getline(ss, zhangting, ','); // 读取 zhangting
+
+		try {
+			upLimitPriceMap[ts_code] = stod(zhangting); // 转换为 double 存入字典
+		}
+		catch (const exception& e) {
+			cerr << "Error parsing line: " << line << endl;
+		}
+	}
+
+	file.close();
+}
+
 //ptag是行情结构体，pParam为调用SetDoMsg时候传入的指针
 void _cdecl MyDoMsg(T_SIPTAGMSG* ptag, void* pParam)
 {
@@ -1151,6 +1190,7 @@ void _cdecl MyDoMsg(T_SIPTAGMSG* ptag, void* pParam)
 			// instead of a pointer, if necessary.
 			StoreDataSH(shcode, ptr);
 		});
+
 		//shcode += ".csv";
 		//shcode = str + shcode;
 		//WriteStockDataSHToFile(*pZSdata, shcode, code);
@@ -1797,6 +1837,8 @@ void createDir() {
 
 int main(int argc, char* argv[])
 {
+	//ReadStockPool("C:\\Users\\tomst\\Desktop\\gtp5.6_release.zip(1)\\gtp5.6_release\\demo\\source\\stock_pool.csv");
+	ReadStockPool("stock_pool.csv");
 	createDir();
     //INIReader reader("C:\\Users\\tomst\\Desktop\\gtp5.6_release.zip(1)\\gtp5.6_release\\demo\\source\\x64\\Release\\config.ini");
                      	INIReader reader("./config.ini");
